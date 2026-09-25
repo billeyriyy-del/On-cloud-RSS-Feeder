@@ -122,6 +122,10 @@ func TestConversation(t *testing.T) {
 	if r = turn("open it", &c); r.Action == nil || r.Action.Type != "open" || r.Action.URL != "https://x.example/b" {
 		t.Fatalf("open: %+v", r.Action)
 	}
+	one := Context{IDs: []int64{r.Item.ID}, Pos: -1}
+	if r = turn("read the third one", &one); !strings.Contains(r.Speak[0], "only has 1") {
+		t.Fatalf("out of range: %q", r.Speak)
+	}
 	if r = turn("how many unread", nil); r.Speak[0] != "2 unread stories." {
 		t.Fatalf("count: %q", r.Speak)
 	}

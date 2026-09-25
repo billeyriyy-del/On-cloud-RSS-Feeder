@@ -151,7 +151,11 @@ func (a *Agent) Run(ctx context.Context, cmd Command, req Request) (*Response, e
 			return nil, err
 		}
 		if it == nil {
-			r.say(p.s("nothing_selected"))
+			if n := len(r.Context.IDs); n > 0 {
+				r.say(p.f("out_of_range", n))
+			} else {
+				r.say(p.s("nothing_selected"))
+			}
 			return r, nil
 		}
 		r.Context.Pos = pos
@@ -488,6 +492,7 @@ var en = map[string]string{
 	"end_of_list":      "That's the end of the list.",
 	"gone":             "That story is no longer available.",
 	"nothing_selected": "There's nothing to pick from yet. Try “what's new”.",
+	"out_of_range":     "The list only has %d. Say “read the first one”, or “what's new”.",
 	"opening":          "Opening %s.",
 	"playing":          "Playing %s.",
 	"no_summary":       "There's no summary for this one.",
@@ -524,6 +529,7 @@ var zh = map[string]string{
 	"end_of_list":      "列表已经到底了。",
 	"gone":             "这篇文章已经不在了。",
 	"nothing_selected": "还没有可选的文章，试试说“有什么新的”。",
+	"out_of_range":     "列表里只有%d篇。",
 	"opening":          "正在打开%s。",
 	"playing":          "正在播放%s。",
 	"no_summary":       "这篇没有摘要。",

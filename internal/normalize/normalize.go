@@ -144,7 +144,8 @@ func isCJK(r rune) bool {
 
 // ResolveURLs rewrites relative href/src/srcset/poster URLs in an HTML fragment
 // against base, promotes lazy-load attributes (data-src, data-srcset) to real
-// ones, and returns the re-rendered fragment. On parse failure it returns the input.
+// ones, gives images without alt text an empty alt, and returns the
+// re-rendered fragment. On parse failure it returns the input.
 func ResolveURLs(fragment string, base *url.URL) string {
 	if base == nil || fragment == "" {
 		return fragment
@@ -158,6 +159,10 @@ func ResolveURLs(fragment string, base *url.URL) string {
 	walk = func(n *xhtml.Node) {
 		if n.Type == xhtml.ElementNode {
 			promoteLazy(n)
+			if n.Data == "img" && !hasAttr(n, "alt") {
+				// Without alt, screen readers announce the file name.
+				n.Attr = append(n.Attr, xhtml.Attribute{Key: "alt", Val: ""})
+			}
 			for i, a := range n.Attr {
 				switch a.Key {
 				case "href", "src", "poster", "cite":
@@ -179,6 +184,15 @@ func ResolveURLs(fragment string, base *url.URL) string {
 		}
 	}
 	return buf.String()
+}
+
+func hasAttr(n *xhtml.Node, key string) bool {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func promoteLazy(n *xhtml.Node) {
