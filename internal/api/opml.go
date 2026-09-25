@@ -2,12 +2,16 @@ package api
 
 import (
 	"encoding/xml"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"rssfeeder/internal/fetcher"
 	"rssfeeder/internal/model"
+	"rssfeeder/internal/storage"
+
+	"golang.org/x/net/html/charset"
 )
 
 // ── OPML structures ───────────────────────────────────────────────────────────
@@ -38,99 +42,102 @@ type opmlOutline struct {
 
 // ── Import ────────────────────────────────────────────────────────────────────
 
-// handleOPMLImport parses an OPML file and creates sources (and folders) atomically.
-// Partial imports are worse than failures, so the whole operation is all-or-nothing.
+// handleOPMLImport creates folders and sources from an OPML file. Folders are
+// matched by name so re-importing is harmless, nesting is kept up to the depth
+// limit (deeper groups are flattened into their deepest allowed ancestor), and
+// feeds already subscribed are counted as skipped. First polls are spread over
+// the next hour so a 300-feed import does not stampede.
 func (s *Server) handleOPMLImport(w http.ResponseWriter, r *http.Request) {
 	var doc opml
-	if err := xml.NewDecoder(r.Body).Decode(&doc); err != nil {
+	dec := xml.NewDecoder(r.Body)
+	dec.Strict = false
+	dec.CharsetReader = charset.NewReaderLabel
+	if err := dec.Decode(&doc); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid OPML: "+err.Error())
 		return
 	}
-
 	ctx := r.Context()
-	type result struct {
+	var res struct {
 		FoldersCreated int `json:"folders_created"`
 		SourcesCreated int `json:"sources_created"`
 		Skipped        int `json:"skipped"`
 	}
-	var res result
-
-	// Two-pass: collect everything, then write. Aborts on first DB error.
-	type pendingSource struct {
-		src      *model.Source
-		folderID *int64
+	existing, err := s.store.ListFolders(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
 	}
-	type pendingFolder struct {
-		folder   *model.Folder
-		children []opmlOutline
+	type fkey struct {
+		parent int64
+		name   string
 	}
-
-	var folders []pendingFolder
-	var topSources []opmlOutline
-
-	for _, outline := range doc.Body.Outlines {
-		if isFeedOutline(outline) {
-			topSources = append(topSources, outline)
-		} else {
-			folders = append(folders, pendingFolder{
-				folder:   &model.Folder{Name: outlineName(outline)},
-				children: outline.Outlines,
-			})
+	folders := map[fkey]int64{}
+	for _, f := range existing {
+		var p int64
+		if f.ParentID != nil {
+			p = *f.ParentID
 		}
+		folders[fkey{p, strings.ToLower(f.Name)}] = f.ID
 	}
 
-	// Create folders first so we have IDs for child sources.
-	for i := range folders {
-		pf := &folders[i]
-		if err := s.store.CreateFolder(ctx, pf.folder); err != nil {
-			writeError(w, http.StatusInternalServerError, "db error creating folder: "+err.Error())
-			return
-		}
-		res.FoldersCreated++
-	}
-
-	// Create sources at top level (no folder).
-	for _, o := range topSources {
-		src := outlineToSource(o, nil)
-		if src == nil {
-			res.Skipped++
-			continue
-		}
-		if err := s.store.CreateSource(ctx, src); err != nil {
-			if isDuplicateErr(err) {
-				res.Skipped++
-				continue
-			}
-			writeError(w, http.StatusInternalServerError, "db error creating source: "+err.Error())
-			return
-		}
-		res.SourcesCreated++
-	}
-
-	// Create sources under each folder.
-	for _, pf := range folders {
-		folderID := pf.folder.ID
-		for _, o := range pf.children {
-			if !isFeedOutline(o) {
-				continue // skip deeply-nested groups at import time
-			}
-			src := outlineToSource(o, &folderID)
-			if src == nil {
-				res.Skipped++
-				continue
-			}
-			if err := s.store.CreateSource(ctx, src); err != nil {
-				if isDuplicateErr(err) {
+	var walk func(outlines []opmlOutline, parent *int64, depth int) error
+	walk = func(outlines []opmlOutline, parent *int64, depth int) error {
+		for _, o := range outlines {
+			if isFeedOutline(o) {
+				src := outlineToSource(o, parent)
+				if src == nil {
 					res.Skipped++
 					continue
 				}
-				writeError(w, http.StatusInternalServerError, "db error creating source: "+err.Error())
-				return
+				if err := s.store.CreateSource(ctx, src); err != nil {
+					if errors.Is(err, storage.ErrDuplicate) {
+						res.Skipped++
+						continue
+					}
+					return err
+				}
+				res.SourcesCreated++
+				continue
 			}
-			res.SourcesCreated++
+			if len(o.Outlines) == 0 {
+				continue
+			}
+			if depth > maxFolderDepth { // too deep: keep feeds in the current folder
+				if err := walk(o.Outlines, parent, depth); err != nil {
+					return err
+				}
+				continue
+			}
+			var pid int64
+			if parent != nil {
+				pid = *parent
+			}
+			name := strings.TrimSpace(outlineName(o))
+			if name == "" {
+				name = "Imported"
+			}
+			id, ok := folders[fkey{pid, strings.ToLower(name)}]
+			if !ok {
+				f := &model.Folder{Name: name, ParentID: parent}
+				if err := s.store.CreateFolder(ctx, f); err != nil {
+					return err
+				}
+				id = f.ID
+				folders[fkey{pid, strings.ToLower(name)}] = id
+				res.FoldersCreated++
+			}
+			fid := id
+			if err := walk(o.Outlines, &fid, depth+1); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-
+	if err := walk(doc.Body.Outlines, nil, 0); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "import stopped: " + err.Error(), "partial": res})
+		return
+	}
+	s.kick()
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -151,12 +158,7 @@ func (s *Server) handleOPMLExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	folderMap := make(map[int64]*model.Folder, len(folders))
-	for _, f := range folders {
-		folderMap[f.ID] = f
-	}
-
-	// Group sources by folder.
+	// Group sources and child folders by parent, then build the tree.
 	byFolder := make(map[int64][]opmlOutline)
 	var noFolder []opmlOutline
 	for _, src := range sources {
@@ -167,22 +169,37 @@ func (s *Server) handleOPMLExport(w http.ResponseWriter, r *http.Request) {
 			noFolder = append(noFolder, o)
 		}
 	}
-
-	var body opmlBody
-	body.Outlines = append(body.Outlines, noFolder...)
+	children := make(map[int64][]*model.Folder)
+	var roots []*model.Folder
 	for _, f := range folders {
-		if children, ok := byFolder[f.ID]; ok {
-			body.Outlines = append(body.Outlines, opmlOutline{
-				Text:     f.Name,
-				Title:    f.Name,
-				Outlines: children,
-			})
+		if f.ParentID != nil {
+			children[*f.ParentID] = append(children[*f.ParentID], f)
+		} else {
+			roots = append(roots, f)
 		}
 	}
+	var build func(f *model.Folder, depth int) opmlOutline
+	build = func(f *model.Folder, depth int) opmlOutline {
+		o := opmlOutline{Text: f.Name, Title: f.Name}
+		if depth < 8 {
+			for _, c := range children[f.ID] {
+				o.Outlines = append(o.Outlines, build(c, depth+1))
+			}
+		}
+		o.Outlines = append(o.Outlines, byFolder[f.ID]...)
+		return o
+	}
+	var body opmlBody
+	for _, f := range roots {
+		if o := build(f, 0); len(o.Outlines) > 0 {
+			body.Outlines = append(body.Outlines, o)
+		}
+	}
+	body.Outlines = append(body.Outlines, noFolder...)
 
 	doc := opml{
 		Version: "2.0",
-		Head:    opmlHead{Title: "RSS Feeds — " + time.Now().Format("2006-01-02")},
+		Head:    opmlHead{Title: "Noema subscriptions — " + time.Now().Format("2006-01-02")},
 		Body:    body,
 	}
 
@@ -226,17 +243,15 @@ func outlineToSource(o opmlOutline, folderID *int64) *model.Source {
 
 func sourceToOutline(src *model.Source) opmlOutline {
 	o := opmlOutline{
-		Text:   src.Title,
-		Title:  src.Title,
-		XMLURL: src.URL,
+		Text:    src.Title,
+		Title:   src.Title,
+		XMLURL:  src.URL,
+		HTMLURL: src.SiteURL,
+		Type:    "rss",
 	}
-	if src.Type == model.SourceTypeRSS {
-		o.Type = "rss"
+	if src.Type == model.SourceTypeHTML {
+		// Other readers cannot subscribe to a scraped page; keep it as a link.
+		o.Type, o.XMLURL, o.HTMLURL = "link", "", src.URL
 	}
 	return o
-}
-
-// isDuplicateErr reports whether the error is a UNIQUE constraint violation.
-func isDuplicateErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
