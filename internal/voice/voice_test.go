@@ -39,6 +39,7 @@ func TestParse(t *testing.T) {
 		{"news about apple", Command{Intent: Search, Query: "apple"}},
 		{"my account settings page", Command{Intent: Search, Query: "my account settings page"}}, // not "count"
 		{"stop", Command{Intent: Stop}},
+		{"mark all as unread", Command{Intent: Help}},
 		{"help", Command{Intent: Help}},
 		{"banana", Command{Intent: Help}},
 		{"有什么新的", Command{Intent: Brief}},
@@ -128,6 +129,12 @@ func TestConversation(t *testing.T) {
 	}
 	if r = turn("how many unread", nil); r.Speak[0] != "2 unread stories." {
 		t.Fatalf("count: %q", r.Speak)
+	}
+	// "mark all" after a scoped, dated briefing only covers what was briefed.
+	r = turn("what's new in tech today", nil)
+	c = r.Context
+	if r = turn("mark all as read", &c); len(r.UndoIDs) != 0 {
+		t.Fatalf("scoped mark all touched %v (today's tech item was already read)", r.UndoIDs)
 	}
 	if r = turn("mark all as read", nil); len(r.UndoIDs) != 2 {
 		t.Fatalf("mark all: %+v", r.UndoIDs)

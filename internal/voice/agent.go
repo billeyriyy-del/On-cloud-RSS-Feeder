@@ -99,7 +99,7 @@ func (a *Agent) Run(ctx context.Context, cmd Command, req Request) (*Response, e
 				return nil, err
 			}
 			ids, err := a.Store.MarkRead(ctx, storage.MarkScope{SourceID: r.Context.SourceID, FolderID: r.Context.FolderID,
-				MaxID: counts.MaxID, Read: true, At: a.now().Unix()})
+				Since: r.Context.Since, MaxID: counts.MaxID, Read: true, At: a.now().Unix()})
 			if err != nil {
 				return nil, err
 			}

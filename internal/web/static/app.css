@@ -153,6 +153,7 @@ kbd {
 .view-link:hover, .tree-row:hover { background: var(--surface-2); }
 .view-link[aria-current="page"], .tree-row[aria-current="page"] { background: var(--green-soft); }
 .view-link[aria-current="page"] svg, .tree-row[aria-current="page"] svg { color: var(--green-ink); }
+[aria-current="page"] .count { color: var(--ink-2); }
 .count { font-size: 0.8125rem; color: var(--mute); font-variant-numeric: tabular-nums; margin-left: 0.5rem; }
 .side-section { flex: 1; min-height: 0; overflow-y: auto; margin-top: 0.75rem; -webkit-overflow-scrolling: touch; }
 .side-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mute); margin: 0.5rem 0.6rem 0.25rem; }

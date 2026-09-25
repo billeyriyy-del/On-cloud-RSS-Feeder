@@ -217,4 +217,13 @@ CREATE TRIGGER trg_sources_del AFTER DELETE ON sources BEGIN
     INSERT INTO change_log (entity, entity_id, op, at) VALUES ('source', OLD.id, 'delete', CAST(strftime('%s','now') AS INTEGER));
 END;
 `,
+	// ── 3: remember swept entries so feeds that keep long archives (podcasts,
+	// full-archive blogs) do not resurrect them as unread after retention ──
+	`
+CREATE TABLE swept_guids (
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    guid      TEXT    NOT NULL,
+    PRIMARY KEY (source_id, guid)
+) WITHOUT ROWID;
+`,
 }

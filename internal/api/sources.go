@@ -148,9 +148,7 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 		existing.Title = strings.TrimSpace(*patch.Title)
 	}
 	if patch.URL != nil && strings.TrimSpace(*patch.URL) != "" {
-		existing.URL = strings.TrimSpace(*patch.URL)
-		existing.NextPollAt = time.Now().Unix()
-		existing.ConsecFails = 0
+		existing.URL = strings.TrimSpace(*patch.URL) // storage resets validators and push
 	}
 	if len(patch.FolderID) > 0 {
 		if string(patch.FolderID) == "null" {
@@ -181,10 +179,7 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 		}
 		existing.PollInterval = *patch.PollInterval
 	}
-	if patch.IsDead != nil && !*patch.IsDead && existing.IsDead {
-		existing.IsDead, existing.ConsecFails = false, 0
-		existing.NextPollAt = time.Now().Unix()
-	}
+	revive := patch.IsDead != nil && !*patch.IsDead && existing.IsDead
 	if err := s.store.UpdateSource(r.Context(), existing); err != nil {
 		if errors.Is(err, storage.ErrDuplicate) {
 			writeError(w, http.StatusConflict, "another source already uses that URL")
@@ -193,8 +188,18 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	if revive {
+		if err := s.store.ReviveSource(r.Context(), existing.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+	}
 	s.kick()
-	writeJSON(w, http.StatusOK, existing)
+	fresh, err := s.store.GetSource(r.Context(), existing.ID)
+	if err != nil || fresh == nil {
+		fresh = existing
+	}
+	writeJSON(w, http.StatusOK, fresh)
 }
 
 func (s *Server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {

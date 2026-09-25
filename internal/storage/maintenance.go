@@ -15,6 +15,10 @@ func (s *Store) SweepExpiredItems(ctx context.Context, before int64) (int, error
 	defer tx.Rollback()
 
 	const where = `fetched_at < ? AND id NOT IN (SELECT item_id FROM item_state WHERE is_starred = 1)`
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO swept_guids (source_id, guid) SELECT source_id, guid FROM items WHERE `+where, before); err != nil {
+		return 0, err
+	}
 	ids, err := ftsDeleteWhere(ctx, tx, where, before)
 	if err != nil {
 		return 0, err

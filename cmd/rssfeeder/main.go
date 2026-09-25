@@ -42,10 +42,11 @@ func main() {
 		static = web.Handler()
 	}
 	apiSrv := api.New(api.Config{
-		JWTSecret: cfg.JWTSecret,
-		Password:  cfg.Password,
-		Location:  cfg.Location,
-		Static:    static,
+		JWTSecret:  cfg.JWTSecret,
+		Password:   cfg.Password,
+		Location:   cfg.Location,
+		Static:     static,
+		TrustProxy: getenv("RSS_TRUST_PROXY", "0") == "1",
 	}, store, sched)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

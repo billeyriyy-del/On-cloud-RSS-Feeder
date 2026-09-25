@@ -355,6 +355,12 @@ func TestWebSubFlow(t *testing.T) {
 	if rec.Code != 200 || rec.Body.String() != "abc123" || !reload(t, s, src.ID).Push {
 		t.Fatalf("verify: %d %q", rec.Code, rec.Body.String())
 	}
+	// A verification we did not ask for (replayed or forged) is refused.
+	rec = httptest.NewRecorder()
+	ws.HandleVerify(rec, httptest.NewRequest("GET", "/websub/x?hub.mode=subscribe&hub.topic="+url.QueryEscape("https://blog.example/feed")+"&hub.challenge=again&hub.lease_seconds=999999999", nil), src.ID)
+	if rec.Code != 404 {
+		t.Fatalf("unsolicited verification accepted: %d", rec.Code)
+	}
 	// Wrong topic is refused.
 	rec = httptest.NewRecorder()
 	ws.HandleVerify(rec, httptest.NewRequest("GET", "/websub/x?hub.mode=subscribe&hub.topic=https://evil/&hub.challenge=z", nil), src.ID)

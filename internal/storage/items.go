@@ -89,6 +89,14 @@ func (s *Store) UpsertItem(ctx context.Context, item *model.Item) (int64, bool, 
 
 	switch {
 	case err == sql.ErrNoRows:
+		var swept int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM swept_guids WHERE source_id=? AND guid=?`,
+			item.SourceID, item.GUID).Scan(&swept); err != nil {
+			return 0, false, err
+		}
+		if swept > 0 {
+			return 0, false, nil // aged out by retention: never re-add it
+		}
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO items
 			    (source_id, guid, url, title, author, summary, image_url, kind, lang, reading_secs,

@@ -96,6 +96,8 @@ func Parse(text string) Command {
 		cmd.Intent = Stop
 	case starts("help") || has("what can you do", "what can i say", "帮助"):
 		cmd.Intent = Help
+	case has("mark all", "mark everything") && has("unread", "as unread"):
+		cmd.Intent = Help // too destructive to guess at; the app offers undo instead
 	case has("mark all", "mark everything", "clear all", "all read", "全部已读"):
 		cmd.Intent = MarkAll
 		cmd.Scope = scope(t)

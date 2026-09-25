@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"rssfeeder/internal/model"
 )
@@ -84,22 +85,33 @@ func (s *Store) ListSources(ctx context.Context) ([]*model.Source, error) {
 	return scanSources(rows)
 }
 
-// UpdateSource writes the user-editable fields. Poll bookkeeping goes through
-// UpdatePollState so a PUT can never clobber an in-flight poll's ETag.
+// UpdateSource writes the user-editable fields only; poll bookkeeping belongs
+// to the scheduler (UpdatePollState), so a PUT cannot clobber a poll that
+// finished meanwhile. Changing the URL starts the feed afresh: validators,
+// failure count and push subscription belong to the old address.
 func (s *Store) UpdateSource(ctx context.Context, src *model.Source) error {
 	src.UpdatedAt = s.now()
 	cfgJSON, err := marshalScraperConfig(src.ScraperConfig)
 	if err != nil {
 		return err
 	}
+	// In SQLite every SET expression sees the row as it was before the update,
+	// so "url <> ?" compares against the old URL.
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE sources SET
-		    type=?, url=?, title=?, folder_id=?, scraper_config=?, fetch_full_text=?,
-		    is_dead=?, consec_fails=?, next_poll_at=?, poll_interval=?, updated_at=?
-		WHERE id=?`,
-		src.Type, src.URL, src.Title, src.FolderID, cfgJSON, boolInt(src.FetchFullText),
-		boolInt(src.IsDead), src.ConsecFails, src.NextPollAt, src.PollInterval, src.UpdatedAt,
-		src.ID,
+		    etag          = CASE WHEN url <> ?1 THEN '' ELSE etag END,
+		    last_modified = CASE WHEN url <> ?1 THEN '' ELSE last_modified END,
+		    consec_fails  = CASE WHEN url <> ?1 THEN 0 ELSE consec_fails END,
+		    is_dead       = CASE WHEN url <> ?1 THEN 0 ELSE is_dead END,
+		    next_poll_at  = CASE WHEN url <> ?1 THEN ?2 ELSE next_poll_at END,
+		    websub_hub    = CASE WHEN url <> ?1 THEN '' ELSE websub_hub END,
+		    websub_topic  = CASE WHEN url <> ?1 THEN '' ELSE websub_topic END,
+		    websub_expires_at = CASE WHEN url <> ?1 THEN 0 ELSE websub_expires_at END,
+		    url=?1, type=?3, title=?4, folder_id=?5, scraper_config=?6, fetch_full_text=?7,
+		    poll_interval=?8, updated_at=?2
+		WHERE id=?9`,
+		src.URL, src.UpdatedAt, src.Type, src.Title, src.FolderID, cfgJSON, boolInt(src.FetchFullText),
+		src.PollInterval, src.ID,
 	)
 	if isUniqueErr(err) {
 		return ErrDuplicate
@@ -134,6 +146,13 @@ func (s *Store) MoveSourceURL(ctx context.Context, id int64, newURL string) (boo
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// ReviveSource brings a dead feed back into the polling rotation now.
+func (s *Store) ReviveSource(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sources SET is_dead=0, consec_fails=0, last_error='', next_poll_at=? WHERE id=?`, s.now(), id)
+	return err
 }
 
 func (s *Store) DeleteSource(ctx context.Context, id int64) error {
@@ -238,7 +257,7 @@ func scanSource(sc scanner) (*model.Source, error) {
 	src.Kind = model.ItemKind(kind)
 	src.IsDead = isDead != 0
 	src.FetchFullText = fullText != 0
-	src.Push = src.WebSub.ExpiresAt > 0
+	src.Push = src.WebSub.ExpiresAt > time.Now().Unix()
 	if cfgJSON != nil {
 		var cfg model.ScraperConfig
 		if err := json.Unmarshal([]byte(*cfgJSON), &cfg); err != nil {

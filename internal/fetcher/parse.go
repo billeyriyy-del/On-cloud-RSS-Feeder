@@ -334,7 +334,12 @@ func entryToItem(sourceID int64, e *gofeed.Item, base, feedImage, feedAuthor, la
 	}
 
 	// Identity: GUID, else link, else title+date. Hashed so length is bounded.
+	// For GUID-less entries this hashes the link exactly as published (before
+	// resolving or stripping tracking), which is what earlier versions stored.
 	idRaw := e.GUID
+	if idRaw == "" {
+		idRaw = e.Link
+	}
 	if idRaw == "" {
 		idRaw = link
 	}

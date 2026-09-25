@@ -16,20 +16,33 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"rssfeeder/internal/model"
 	"rssfeeder/internal/storage"
 )
 
-// leaseSecs is the lease we ask hubs for; they may grant less.
-const leaseSecs = 10 * 24 * 3600
+// leaseSecs is the lease we ask hubs for; they may grant less. maxLeaseSecs
+// caps what we accept so a bogus verification cannot pin a lease forever.
+const (
+	leaseSecs    = 10 * 24 * 3600
+	maxLeaseSecs = 30 * 24 * 3600
+)
+
+type pendingSub struct {
+	topic string
+	at    time.Time
+}
 
 // WebSub subscribes to feeds that advertise a hub (WordPress.com, Blogger,
 // Medium, YouTube, many static-site hosts via Superfeedr/websub.rocks) so new
 // posts arrive in seconds instead of on the next poll. It needs a public URL
 // the hub can reach; without one Noema simply keeps polling.
 type WebSub struct {
+	mu      sync.Mutex
+	pending map[int64]pendingSub // subscriptions we asked for, awaiting verification
+
 	store     *storage.Store
 	client    *http.Client
 	publicURL string
@@ -41,7 +54,28 @@ func newWebSub(store *storage.Store, publicURL string) *WebSub {
 		store:     store,
 		client:    &http.Client{Timeout: 20 * time.Second},
 		publicURL: strings.TrimSuffix(publicURL, "/"),
+		pending:   map[int64]pendingSub{},
 	}
+}
+
+// expect records that we just asked a hub to (re)subscribe source id.
+func (w *WebSub) expect(id int64, topic string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending[id] = pendingSub{topic: topic, at: time.Now()}
+}
+
+// claim consumes a pending subscription if the hub's verification matches one
+// we asked for in the last hour. Anything else is someone else's request.
+func (w *WebSub) claim(id int64, topic string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	p, ok := w.pending[id]
+	if !ok || p.topic != topic || time.Since(p.at) > time.Hour {
+		return false
+	}
+	delete(w.pending, id)
+	return true
 }
 
 func (w *WebSub) callback(id int64) string {
@@ -70,6 +104,7 @@ func (w *WebSub) Subscribe(ctx context.Context, src *model.Source, hub, topic st
 		return err
 	}
 	src.WebSub = sub
+	w.expect(src.ID, topic)
 	return w.post(ctx, hub, url.Values{
 		"hub.mode":          {"subscribe"},
 		"hub.topic":         {topic},
@@ -138,13 +173,16 @@ func (w *WebSub) HandleVerify(rw http.ResponseWriter, r *http.Request, id int64)
 	}
 	switch mode {
 	case "subscribe":
-		if src == nil || src.WebSub.Hub == "" || src.WebSub.Topic != topic || challenge == "" {
+		if src == nil || src.WebSub.Hub == "" || src.WebSub.Topic != topic || challenge == "" || !w.claim(id, topic) {
 			http.NotFound(rw, r)
 			return
 		}
 		lease, _ := strconv.ParseInt(q.Get("hub.lease_seconds"), 10, 64)
 		if lease <= 0 {
 			lease = leaseSecs
+		}
+		if lease > maxLeaseSecs {
+			lease = maxLeaseSecs
 		}
 		src.WebSub.ExpiresAt = time.Now().Unix() + lease
 		if err := w.store.SetWebSub(r.Context(), id, src.WebSub); err != nil {

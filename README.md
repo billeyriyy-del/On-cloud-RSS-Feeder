@@ -25,6 +25,7 @@ go run ./cmd/rssfeeder
 | `RSS_TZ` | server local | IANA zone used for “today” in voice queries, e.g. `Pacific/Auckland`. |
 | `RSS_BACKUP_DIR` | (empty) | If set, writes a consistent `VACUUM INTO` snapshot daily and keeps 7. |
 | `RSS_WEB_UI` | `1` | Set `0` to serve the API only. |
+| `RSS_TRUST_PROXY` | `0` | Set `1` behind a reverse proxy so `X-Forwarded-For` is used for per-IP login limits. Leave it `0` when clients connect directly, or they can spoof their address. |
 
 Operational endpoints: `GET /healthz` (no auth) and `GET /debug/vars`
 (expvar counters under `noema`: polls, failures, items ingested, pushes,

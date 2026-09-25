@@ -395,3 +395,59 @@ func TestMigratesPreMigrationDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSweptEntriesDoNotComeBack(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	src := mustSource(t, s, "https://pod.example/feed", nil)
+	mustItem(t, s, src.ID, "ep1")
+	if n, _ := s.SweepExpiredItems(ctx, s.now()+1); n != 1 {
+		t.Fatalf("swept %d", n)
+	}
+	// The feed still lists the episode: it must not reappear as unread.
+	id, isNew, err := s.UpsertItem(ctx, &model.Item{SourceID: src.ID, GUID: "ep1", URL: "https://pod.example/ep1", Title: "Ep 1", PublishedAt: 1})
+	if err != nil || isNew || id != 0 {
+		t.Fatalf("swept entry re-added: id=%d new=%v err=%v", id, isNew, err)
+	}
+	if c, _ := s.GetCounts(ctx); c.Unread != 0 {
+		t.Fatalf("unread = %d", c.Unread)
+	}
+}
+
+func TestMarkReadUndoAppliesEveryID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	src := mustSource(t, s, "https://a.example/feed", nil)
+	for i := 0; i < 2000; i++ {
+		mustItem(t, s, src.ID, fmt.Sprint(i))
+	}
+	ids, err := s.MarkRead(ctx, MarkScope{Read: true})
+	if err != nil || len(ids) != 2000 {
+		t.Fatalf("mark: %d %v", len(ids), err)
+	}
+	undone, err := s.MarkRead(ctx, MarkScope{IDs: ids, Read: false, At: s.now() + 1})
+	if err != nil || len(undone) != 2000 {
+		t.Fatalf("undo restored %d of 2000 (err %v)", len(undone), err)
+	}
+}
+
+func TestChangingURLResetsFeedState(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	src := mustSource(t, s, "https://old.example/feed", nil)
+	s.UpdatePollState(ctx, src.ID, model.PollState{ETag: `"x"`, LastModified: "yesterday", ConsecFails: 4, NextPollAt: s.now() + 9999, PollInterval: 3600})
+	s.SetWebSub(ctx, src.ID, model.WebSub{Hub: "https://hub", Topic: "https://old.example/feed", ExpiresAt: s.now() + 999})
+	got, _ := s.GetSource(ctx, src.ID)
+	got.Title = "Renamed"
+	if err := s.UpdateSource(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetSource(ctx, src.ID); got.ETag != `"x"` || got.ConsecFails != 4 || !got.Push {
+		t.Fatalf("a rename must not touch poll state: %+v", got)
+	}
+	got.URL = "https://new.example/feed"
+	s.UpdateSource(ctx, got)
+	if got, _ = s.GetSource(ctx, src.ID); got.ETag != "" || got.LastModified != "" || got.ConsecFails != 0 || got.Push || got.NextPollAt > s.now() || got.Title != "Renamed" {
+		t.Fatalf("new URL must start afresh: %+v", got)
+	}
+}

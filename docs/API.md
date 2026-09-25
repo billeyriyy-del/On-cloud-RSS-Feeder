@@ -231,3 +231,10 @@ When `RSS_PUBLIC_URL` is set:
   `.keyboardShortcut`: j/k, o, m, s, v, r, ⇧A, /, and . for voice.
 - **Reduced motion:** honour `accessibilityReduceMotion` for swipe springs and
   sheet transitions.
+- **Ordering across pages:** each page is internally consistent, but after
+  compaction a `state` row can arrive a page *before* its item (the item's
+  newest change may be later in the log). Keep states without a foreign key to
+  items, or park them until the item arrives.
+- **Retention:** entries older than the retention window are swept unless
+  saved, and are remembered so a feed that keeps its whole archive (podcasts)
+  does not bring them back as unread.

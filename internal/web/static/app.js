@@ -71,7 +71,7 @@
   // ── State ──────────────────────────────────────────────────────────────
   var S = {
     view: 'unread', sourceId: 0, folderId: 0, q: '',
-    items: [], byId: {}, next: '', loading: false, done: false, maxId: 0,
+    items: [], byId: {}, listed: {}, next: '', loading: false, done: false, maxId: 0,
     sel: -1, openId: 0,
     sources: [], sourceById: {}, folders: [], counts: { unread: 0, starred: 0, by_source: {}, max_id: 0 },
     expanded: store.get('expanded', {}),
@@ -144,9 +144,10 @@
   window.addEventListener('popstate', function () { route(false); });
 
   function listURL() {
-    if (S.sourceId) return '/?source=' + S.sourceId;
-    if (S.folderId) return '/?folder=' + S.folderId;
-    return S.view === 'unread' ? '/' : '/?view=' + S.view;
+    var q = S.sourceId ? 'source=' + S.sourceId : S.folderId ? 'folder=' + S.folderId : '';
+    var defaultView = (S.sourceId || S.folderId) ? 'all' : 'unread';
+    if (S.view !== defaultView) q += (q ? '&' : '') + 'view=' + S.view;
+    return q ? '/?' + q : '/';
   }
   function select(opts) {
     S.view = opts.view || 'all'; S.sourceId = opts.sourceId || 0; S.folderId = opts.folderId || 0; S.q = '';
@@ -232,7 +233,7 @@
   var listToken = 0;
   function loadList(reset) {
     if (reset) {
-      S.items = []; S.byId = {}; S.next = ''; S.done = false; S.sel = -1; S.maxId = S.counts.max_id || 0;
+      S.items = []; S.listed = {}; S.next = ''; S.done = false; S.sel = -1; S.maxId = S.counts.max_id || 0;
       $('#list').innerHTML = '';
       $('#listscroll').scrollTop = 0;
       $('#list-title').textContent = listTitle();
@@ -253,8 +254,10 @@
     return api('GET', '/items?' + p.toString()).then(function (r) {
       if (token !== listToken) return;
       var frag = document.createDocumentFragment();
-      r.items.forEach(function (it) {
-        if (S.byId[it.id]) return;
+      r.items.forEach(function (fresh) {
+        if (S.listed[fresh.id]) return; // the list dedupes separately from the item cache
+        S.listed[fresh.id] = true;
+        var it = S.byId[fresh.id] ? Object.assign(S.byId[fresh.id], fresh) : fresh;
         S.byId[it.id] = it;
         S.items.push(it);
         if (it.id > S.maxId) S.maxId = it.id;

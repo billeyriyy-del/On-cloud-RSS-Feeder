@@ -13,6 +13,9 @@ const stateColumns = `item_id, is_read, is_starred, read_at, starred_at, read_ch
 // with a fast clock could otherwise make its writes unbeatable for hours.
 const maxClockSkew = 300
 
+// markChunk bounds the ids bound into one MarkRead statement.
+const markChunk = 900
+
 func (s *Store) GetItemState(ctx context.Context, itemID int64) (*model.ItemState, error) {
 	return getItemState(ctx, s.db, itemID)
 }
@@ -102,6 +105,7 @@ type MarkScope struct {
 	FolderID int64
 	MaxID    int64 // only items the client had seen (id <= MaxID); 0 = all
 	Before   int64 // only items published before this time; 0 = any
+	Since    int64 // only items published at or after this time; 0 = any
 	Read     bool  // true: mark read; false: mark unread (undo)
 	IDs      []int64
 	At       int64
@@ -110,6 +114,21 @@ type MarkScope struct {
 // MarkRead flips is_read for every item in scope in one statement (LWW-guarded)
 // and returns the ids it changed, so a client can offer undo.
 func (s *Store) MarkRead(ctx context.Context, m MarkScope) ([]int64, error) {
+	if len(m.IDs) > markChunk {
+		// Undo of a large mark-all: apply every id, in chunks that stay under
+		// SQLite's bound-variable limit, rather than silently dropping some.
+		all := []int64{}
+		for _, c := range chunks(m.IDs, markChunk) {
+			sub := m
+			sub.IDs = c
+			ids, err := s.MarkRead(ctx, sub)
+			if err != nil {
+				return nil, err
+			}
+			all = append(all, ids...)
+		}
+		return all, nil
+	}
 	now := s.now()
 	at := m.At
 	if at <= 0 || at > now+maxClockSkew {
@@ -138,10 +157,11 @@ func (s *Store) MarkRead(ctx context.Context, m MarkScope) ([]int64, error) {
 		conds += ` AND i.published_at < ?`
 		args = append(args, m.Before)
 	}
+	if m.Since > 0 {
+		conds += ` AND i.published_at >= ?`
+		args = append(args, m.Since)
+	}
 	if len(m.IDs) > 0 {
-		if len(m.IDs) > 5000 {
-			m.IDs = m.IDs[:5000]
-		}
 		ph, idArgs := placeholders(m.IDs)
 		conds += ` AND i.id IN (` + ph + `)`
 		args = append(args, idArgs...)

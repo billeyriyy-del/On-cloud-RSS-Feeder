@@ -19,9 +19,13 @@ import (
 // Config holds runtime settings for the API server.
 type Config struct {
 	JWTSecret string
-	Password  string         // the single user's password
-	TokenTTL  time.Duration  // default 90 days
-	Location  *time.Location // for "today" in voice queries
+	Password  string        // the single user's password
+	TokenTTL  time.Duration // default 90 days
+	// TrustProxy honours X-Forwarded-For / X-Real-IP for client addresses.
+	// Enable only behind a reverse proxy that sets them; otherwise any client
+	// could spoof its address and dodge the per-IP login limit.
+	TrustProxy bool
+	Location   *time.Location // for "today" in voice queries
 	// Static serves the embedded web client (nil disables it).
 	Static http.Handler
 }
@@ -65,7 +69,9 @@ func New(cfg Config, store *storage.Store, sched *fetcher.Scheduler) *Server {
 // Handler returns the fully-wired router.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RealIP)
+	if s.cfg.TrustProxy {
+		r.Use(middleware.RealIP)
+	}
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5, "application/json", "text/html", "text/css", "application/javascript",
